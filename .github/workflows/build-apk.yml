@@ -42,7 +42,7 @@ jobs:
             echo "::error::Android sdkmanager was not found on the GitHub runner."
             exit 1
           fi
-          SDK_ROOT="$(dirname "$(dirname "$(dirname "$SDKMANAGER")")")"
+          SDK_ROOT="$(dirname "$(dirname "$(dirname "$(dirname "$SDKMANAGER")")")")"
           echo "Using sdkmanager: $SDKMANAGER"
           yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
           "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
