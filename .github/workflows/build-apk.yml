@@ -1,0 +1,192 @@
+name: Build foreground warning test APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Create Android project files
+        shell: bash
+        run: |
+          mkdir -p app/src/main/java/com/example/foregroundwarning
+          cat > settings.gradle <<'GRADLE'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = 'ForegroundWarningTest'
+          include ':app'
+          GRADLE
+
+          cat > build.gradle <<'GRADLE'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          GRADLE
+
+          cat > app/build.gradle <<'GRADLE'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.example.foregroundwarning'
+              compileSdk 35
+              defaultConfig {
+                  applicationId 'com.example.foregroundwarning'
+                  minSdk 26
+                  targetSdk 35
+                  versionCode 1
+                  versionName '1.0'
+              }
+          }
+          GRADLE
+
+          cat > app/src/main/AndroidManifest.xml <<'XML'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <application android:theme="@android:style/Theme.Material.Light.NoActionBar" android:label="前景離開警告測試" android:allowBackup="false">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service android:name=".WarningService" android:exported="false" android:foregroundServiceType="mediaPlayback" />
+              </application>
+          </manifest>
+          XML
+
+          cat > app/src/main/java/com/example/foregroundwarning/MainActivity.kt <<'KOTLIN'
+          package com.example.foregroundwarning
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.os.Build
+          import android.os.Bundle
+          import android.view.Gravity
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 10)
+                  }
+                  val title = TextView(this).apply {
+                      text = "前景離開警告音效測試\n\n請保持本程式開啟，再按 Home 或切換到其他 App。若偵測到本程式失去前景，系統會要求播放警告音。\n\n注意：Android 或手機廠商可能限制背景音效；本測試不能保證每台手機都一定聽得到。"
+                      textSize = 18f
+                      gravity = Gravity.CENTER
+                      setPadding(32, 32, 32, 32)
+                  }
+                  val test = Button(this).apply {
+                      text = "測試警告音"
+                      setOnClickListener { startService(Intent(this@MainActivity, WarningService::class.java).setAction(WarningService.ACTION_BEEP)) }
+                  }
+                  val layout = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER
+                      setPadding(24, 24, 24, 24)
+                      addView(title)
+                      addView(test)
+                  }
+                  setContentView(layout)
+                  val service = Intent(this, WarningService::class.java).setAction(WarningService.ACTION_START)
+                  if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
+              }
+
+              override fun onPause() {
+                  super.onPause()
+                  // The service is already running in the foreground; request a warning when this Activity loses focus.
+                  startService(Intent(this, WarningService::class.java).setAction(WarningService.ACTION_BEEP))
+              }
+          }
+          KOTLIN
+
+          cat > app/src/main/java/com/example/foregroundwarning/WarningService.kt <<'KOTLIN'
+          package com.example.foregroundwarning
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.Service
+          import android.content.Intent
+          import android.media.AudioManager
+          import android.media.ToneGenerator
+          import android.os.Build
+          import android.os.IBinder
+
+          class WarningService : Service() {
+              private var tone: ToneGenerator? = null
+              override fun onCreate() {
+                  super.onCreate()
+                  val manager = getSystemService(NotificationManager::class.java)
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      manager.createNotificationChannel(NotificationChannel(CHANNEL, "前景監測", NotificationManager.IMPORTANCE_LOW))
+                  }
+                  val notification: Notification = if (Build.VERSION.SDK_INT >= 26) {
+                      Notification.Builder(this, CHANNEL).setContentTitle("前景離開監測中").setContentText("切換離開測試程式時會要求播放警告音").setSmallIcon(android.R.drawable.ic_lock_silent_mode_off).build()
+                  } else {
+                      @Suppress("DEPRECATION")
+                      Notification.Builder(this).setContentTitle("前景離開監測中").setContentText("切換離開測試程式時會要求播放警告音").setSmallIcon(android.R.drawable.ic_lock_silent_mode_off).build()
+                  }
+                  startForeground(1, notification)
+                  tone = ToneGenerator(AudioManager.STREAM_ALARM, 100)
+              }
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent?.action == ACTION_BEEP) {
+                      tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 1200)
+                  }
+                  return START_STICKY
+              }
+              override fun onDestroy() {
+                  tone?.release()
+                  tone = null
+                  super.onDestroy()
+              }
+              override fun onBind(intent: Intent?): IBinder? = null
+              companion object {
+                  const val ACTION_START = "com.example.foregroundwarning.START"
+                  const val ACTION_BEEP = "com.example.foregroundwarning.BEEP"
+                  private const val CHANNEL = "foreground_monitor"
+              }
+          }
+          KOTLIN
+
+      - name: Build debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: foreground-warning-test-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
